@@ -24,7 +24,7 @@ type assignee struct {
 	Username string `json:"username"`
 }
 
-type objectAttributes struct {
+type mergeRequestObjectAttributes struct {
 	URL            string `json:"url"`
 	Title          string `json:"title"`
 	Description    string `json:"description"`
@@ -33,15 +33,47 @@ type objectAttributes struct {
 	MergeRequestID int32  `json:"iid"`
 }
 
-type payload struct {
-	User             user             `json:"user"`
-	Project          project          `json:"project"`
-	ObjectAttributes objectAttributes `json:"object_attributes"`
-	Assignees        []assignee       `json:"assignees"`
+type mergeRequestPayload struct {
+	User             user                         `json:"user"`
+	Project          project                      `json:"project"`
+	ObjectAttributes mergeRequestObjectAttributes `json:"object_attributes"`
+	Assignees        []assignee                   `json:"assignees"`
 }
 
 type markdown struct {
 	Content string `json:"content"`
+}
+
+type pipelineObjectAttributes struct {
+	ID     int32  `json:"id"`
+	Status string `json:"status"`
+	Ref    string `json:"ref"`
+}
+
+type commitAuthor struct {
+	Name  string `json:name`
+	Email string `json:email`
+}
+
+type commit struct {
+	URL     string       `json:"url"`
+	Message string       `json:"message"`
+	Author  commitAuthor `json:"author"`
+}
+
+type pipelinePayload struct {
+	Project          project                  `json:"project"`
+	ObjectAttributes pipelineObjectAttributes `json:"object_attributes"`
+	Commit           commit                   `json:"commit"`
+}
+
+type piplineContentData struct {
+	Text, ClassName string
+}
+
+var piplineContentDataMap = map[string]piplineContentData{
+	"success": piplineContentData{"成功🎉", "info"},
+	"failed":  piplineContentData{"失败🤔", "warning"},
 }
 
 // 处理合并请求 hook
@@ -58,7 +90,7 @@ type markdown struct {
 func handleMergeRequestHook(c echo.Context) error {
 	key := c.Param("key")
 
-	payload := new(payload)
+	payload := new(mergeRequestPayload)
 	if err := c.Bind(payload); err != nil {
 		return err
 	}
@@ -107,12 +139,54 @@ func handleMergeRequestHook(c echo.Context) error {
 	return c.String(http.StatusOK, "OK")
 }
 
+// 处理流水线 hook
+/**
+```markdown
+仓库pay的release/test/v2.6分支部署成功🎉/失败🤔\n
+> <font color=\"{{#success build.status}}info{{else}}warning{{/success}}\">{{修复了XXX问题}}</font>\n
+> <font color=\"comment\">zhangsan@example.com</font>\n
+> 点击进入 [git提交详情页面](http://www.example.com)\n
+> 点击进入 [drone构建详情页面](http://www.example.com})
+`
+*/
+func handlePipelineHook(c echo.Context) error {
+	key := c.Param("key")
+
+	payload := new(pipelinePayload)
+	if err := c.Bind(payload); err != nil {
+		return err
+	}
+
+	pipelineStatus := payload.ObjectAttributes.Status
+
+	if pipelineStatus == "success" || pipelineStatus == "failed" {
+		contentData := piplineContentDataMap[pipelineStatus]
+		content := fmt.Sprint(
+			"仓库", payload.Project.Name, "的", payload.ObjectAttributes.Ref, "分支部署", contentData.Text, "\n",
+			"> <font color=\"", contentData.ClassName, "\">", payload.Commit.Message, "</font>\n",
+			"> <font color=\"comment\">", payload.Commit.Author.Email, "</font>\n",
+			"> 点击进入 [git提交详情页面](", payload.Commit.URL, ")\n",
+			"> 点击进入 [ci构建详情页面](", payload.Project.URL, "/pipelines/", payload.ObjectAttributes.ID, ")",
+		)
+
+		err := send(key, content)
+		if err != nil {
+			c.Logger().Error(err)
+			return err
+		}
+	}
+
+	return c.String(http.StatusOK, "OK")
+}
+
 // GitlabHandler 处理 Gitlab
 // https://docs.gitlab.com/ee/user/project/integrations/webhooks.html#merge-request-events
 func GitlabHandler(c echo.Context) error {
 	event := c.Request().Header.Get("X-Gitlab-Event")
 	if event == "Merge Request Hook" {
 		return handleMergeRequestHook(c)
+	} else if event == "Pipeline Hook" {
+		return handlePipelineHook(c)
 	}
 	return c.String(http.StatusOK, "OK")
 }
